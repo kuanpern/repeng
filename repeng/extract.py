@@ -6,13 +6,13 @@ import warnings
 import gguf
 import numpy as np
 from sklearn.decomposition import PCA
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 import tqdm
 
 from .control import ControlModel, model_layer_list
 from .saes import Sae
-
 
 @dataclasses.dataclass
 class DatasetEntry:
@@ -71,7 +71,7 @@ class ControlVector:
         dataset: list[DatasetEntry],
         *,
         decode: bool = True,
-        method: typing.Literal["pca_diff", "pca_center", "umap"] = "pca_center",
+        method: typing.Literal["pca_diff", "pca_center", "umap", "lda"] = "pca_center",
         **kwargs,
     ) -> "ControlVector":
         """
@@ -261,7 +261,7 @@ def read_representations(
     inputs: list[DatasetEntry],
     hidden_layers: typing.Iterable[int] | None = None,
     batch_size: int = 32,
-    method: typing.Literal["pca_diff", "pca_center", "umap"] = "pca_diff",
+    method: typing.Literal["pca_diff", "pca_center", "umap", "lda"] = "pca_diff",
     compute_hiddens: ComputeHiddens | None = None,
     transform_hiddens: (
         typing.Callable[[dict[int, np.ndarray]], dict[int, np.ndarray]] | None
@@ -311,10 +311,25 @@ def read_representations(
             train[1::2] -= center
         elif method == "umap":
             train = h
+        elif method == "lda":
+            # LDA requires raw data (h) and labels (y)
+            # The data structure is [Pos, Neg, Pos, Neg...]
+            train = h
+            
+            # Create labels: 1 for Positive, 0 for Negative
+            y = np.zeros(h.shape[0])
+            y[::2] = 1 
+            
+            # Fit LDA
+            lda_model = LinearDiscriminantAnalysis(n_components=1, solver='svd')
+            lda_model.fit(train, y)
+            
+            # The coef_ is the vector normal to the decision boundary
+            directions[layer] = lda_model.coef_.astype(np.float32).squeeze()
         else:
             raise ValueError("unknown method " + method)
 
-        if method != "umap":
+        if method != "umap" and method != "lda": # Modify this check
             # shape (1, n_features)
             pca_model = PCA(n_components=1, whiten=False).fit(train)
             # shape (n_features,)
